@@ -13,7 +13,6 @@ public final class EntityManager {
     private Map<BaseSystem, HashSet<Entity>> systemNotifiedEntities = new HashMap<>();
     private Map<BaseSystem, Class<? extends Component>[]> systemRequiredComponents = new HashMap<>();
     private Map<BaseSystem, ArrayList<BaseSystem>> systemPredecs = new HashMap<>();
-    private Map<Component, HashSet<Entity>> componentsToEntities = new HashMap<>();
 
     private void throwIfDestroyed(Entity e) {
         if (!entityToComponents.containsKey(e)) {
@@ -42,21 +41,17 @@ public final class EntityManager {
 
     public <T extends Component> void addComponents(Entity e, T... components) {
         for (T component : components) {
-            if (componentsToEntities.get(component) == null) {
-                componentsToEntities.put(component, new HashSet<>());
-            }
-            componentsToEntities.get(component).add(e);
             throwIfDestroyed(e);
             entityToComponents.get(e).put(component.getClass(), component);
         }
+
+        Set<BaseSystem> vis = new HashSet<>();
         for (BaseSystem system : systems) {
-            if (!systemNotifiedEntities.get(system).contains(e)) {
-                if (e.hasComponents(systemRequiredComponents.get(system))) {
-                    system.notifyEntityAddition(e);
-                    systemNotifiedEntities.get(system).add(e);
-                }
+            if (!vis.contains(system)) {
+                topSortAdditions(system, vis, e);
             }
         }
+
     }
 
     public boolean hasComponents(Entity e, Class<? extends Component>... components) {
@@ -76,7 +71,6 @@ public final class EntityManager {
 
     public void removeComponents(Entity e, Class<? extends Component>... componentClasses) {
         for (Class<? extends Component> clazz : componentClasses) {
-            componentsToEntities.get(entityToComponents.get(e).get(clazz)).remove(e);
             entityToComponents.get(e).remove(clazz);
         }
         for (BaseSystem system : systems) {
@@ -116,6 +110,21 @@ public final class EntityManager {
         }
     }
 
+    private void topSortAdditions(BaseSystem system, Set<BaseSystem> vis, Entity e) {
+        for (BaseSystem predec : systemPredecs.get(system)) {
+            if (!vis.contains(predec)) {
+                vis.add(predec);
+                topSortAdditions(predec, vis, e);
+            }
+        }
+        if (!systemNotifiedEntities.get(system).contains(e)) {
+            if (e.hasComponents(systemRequiredComponents.get(system))) {
+                system.notifyEntityAddition(e);
+                systemNotifiedEntities.get(system).add(e);
+            }
+        }
+    }
+
     private void topSortSystems(BaseSystem system, Set<BaseSystem> vis, long deltaT) {
         for (BaseSystem predec : systemPredecs.get(system)) {
             if (!vis.contains(predec)) {
@@ -139,12 +148,5 @@ public final class EntityManager {
                 topSortSystems(system, vis, deltaT);
             }
         }
-    }
-
-    public Set<Entity> getEntitiesWithComponent(Component component) {
-        if (!componentsToEntities.containsKey(component)) {
-            componentsToEntities.put(component, new HashSet<>());
-        }
-        return Collections.unmodifiableSet(componentsToEntities.get(component));
     }
 }
