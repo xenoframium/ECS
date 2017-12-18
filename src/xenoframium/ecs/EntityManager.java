@@ -1,152 +1,170 @@
 package xenoframium.ecs;
 
+import org.lwjgl.glfw.GLFW;
+import xenoframium.ecs.xenoframium.ecs.state.GameStateManager;
+
 import java.util.*;
+import java.util.Map.Entry;
 
 /**
- * Created by chrisjung on 28/09/17.
+ * Created by chrisjung on 18/12/17.
  */
 public final class EntityManager {
-    private int entityCounter = 0;
-    private long lastTime = -1;
-    private Map<Entity, HashMap<Class, Component>> entityToComponents = new HashMap<>();
-    private Set<BaseSystem> systems = new HashSet<>();
-    private Map<BaseSystem, HashSet<Entity>> systemNotifiedEntities = new HashMap<>();
-    private Map<BaseSystem, Class<? extends Component>[]> systemRequiredComponents = new HashMap<>();
-    private Map<BaseSystem, ArrayList<BaseSystem>> systemPredecs = new HashMap<>();
+    private Map<Entity, HashMap<Class<?>, Component>> entityToComponents = new HashMap<>();
+    private Map<EntityFilter, HashSet<Entity>> matchingEntities = new HashMap<>();
 
-    private void throwIfDestroyed(Entity e) {
-        if (!entityToComponents.containsKey(e)) {
-            throw new EntityDestroyedException();
+    private double lastTime = -1;
+
+    private GameStateManager gameStateManager;
+
+    public static class DestroyedEntityAccessException extends RuntimeException {
+        private DestroyedEntityAccessException() {
+            super("Attempted to access destroyed Entity");
         }
     }
 
-    public Entity createEntity() {
-        Entity e = new Entity(entityCounter++, this);
-        entityToComponents.put(e, new HashMap<Class, Component>());
+    public static class DuplicateComponentAddedException extends RuntimeException {
+        private DuplicateComponentAddedException(Class<? extends Component> componentClass) {
+            super(String.format("Added duplicate component %s", componentClass.getName()));
+        };
+    }
+
+    public static class MissingComponentAccessException extends RuntimeException {
+        private MissingComponentAccessException(Class<? extends Component> componentClass) {
+            super(String.format("Attempted to access missing component %s", componentClass.getName()));
+        };
+    }
+
+    public static class NullStateManagerException extends RuntimeException {
+        private NullStateManagerException() {
+            super("Attempted to set StateManager to null.");
+        }
+    }
+
+    public EntityManager(GameStateManager mgr) {
+        if (mgr == null) {
+            throw new NullStateManagerException();
+        }
+        gameStateManager = mgr;
+    }
+
+    private void throwIfEntityDestroyed(Entity e) {
+        if (!entityToComponents.containsKey(e)) {
+            throw new DestroyedEntityAccessException();
+        }
+    }
+
+    private void updateEntity(Entity e) {
+        for (Entry<EntityFilter, HashSet<Entity>> entry : matchingEntities.entrySet()) {
+            EntityFilter filter = entry.getKey();
+            HashSet<Entity> entities = entry.getValue();
+
+            if (entities.contains(e)) {
+                if (!filter.doesMatch(e)) {
+                    entities.remove(e);
+                }
+            } else {
+                if (filter.doesMatch(e)) {
+                    entities.add(e);
+                }
+            }
+        }
+    }
+
+    Entity createEntity() {
+        Entity e = new Entity(this);
+        entityToComponents.put(e, new HashMap<>());
+
         return e;
     }
 
-    public void destroyEntity(Entity e) {
-        if (!entityToComponents.containsKey(e)) {
-            return;
+    boolean hasComponent(Entity e, Class<? extends Component> component) {
+        throwIfEntityDestroyed(e);
+
+        return entityToComponents.get(e).containsKey(component);
+    }
+
+    <T extends Component> T getComponent(Entity e, Class<T> component) {
+        throwIfEntityDestroyed(e);
+        if (!hasComponent(e, component)) {
+            throw new MissingComponentAccessException(component);
         }
-        for (BaseSystem system : systems) {
-            if (systemNotifiedEntities.get(system).contains(e)) {
-                system.notifyEntityRemoval(e);
-                systemNotifiedEntities.get(system).remove(e);
-            }
+
+        return (T) entityToComponents.get(e).get(component);
+    }
+
+    <T extends Component> void addComponent(Entity e, T component) {
+        throwIfEntityDestroyed(e);
+        if (hasComponent(e, component.getClass())) {
+            throw new DuplicateComponentAddedException(component.getClass());
         }
+
+        entityToComponents.get(e).put(component.getClass(), component);
+        updateEntity(e);
+    }
+
+    void removeComponent(Entity e, Class<? extends Component> component) {
+        throwIfEntityDestroyed(e);
+        if (!hasComponent(e, component)) {
+            throw new MissingComponentAccessException(component);
+        }
+
+        entityToComponents.get(e).remove(component);
+        updateEntity(e);
+    }
+
+    void destroyEntity(Entity e) {
+        throwIfEntityDestroyed(e);
+
         entityToComponents.remove(e);
-    }
 
-    public <T extends Component> void addComponents(Entity e, T... components) {
-        for (T component : components) {
-            throwIfDestroyed(e);
-            entityToComponents.get(e).put(component.getClass(), component);
+        for (Set<Entity> entityList : matchingEntities.values()) {
+            entityList.remove(e);
         }
 
-        Set<BaseSystem> vis = new HashSet<>();
-        for (BaseSystem system : systems) {
-            if (!vis.contains(system)) {
-                topSortAdditions(system, vis, e);
+        e.isDestroyed = true;
+    }
+
+    Set<Entity> getEntities(EntityFilter filter) {
+        if (!matchingEntities.containsKey(filter)) {
+            matchingEntities.put(filter, new HashSet<>());
+
+            for (Entity e : entityToComponents.keySet()) {
+                if (filter.doesMatch(e)) {
+                    matchingEntities.get(filter).add(e);
+                }
             }
         }
 
+        return Collections.unmodifiableSet(matchingEntities.get(filter));
     }
 
-    public boolean hasComponents(Entity e, Class<? extends Component>... components) {
-        throwIfDestroyed(e);
-        for (Class<? extends Component> component : components) {
-            if (!entityToComponents.get(e).containsKey(component)) {
-                return false;
-            }
-        }
-        return true;
+    public Space createSpace() {
+        return new Space(this);
     }
 
-    public <T extends Component> T getComponent(Entity e, Class<T> componentClass) {
-        throwIfDestroyed(e);
-        return (T) entityToComponents.get(e).get(componentClass);
-    }
-
-    public void removeComponents(Entity e, Class<? extends Component>... componentClasses) {
-        for (Class<? extends Component> clazz : componentClasses) {
-            entityToComponents.get(e).remove(clazz);
-        }
-        for (BaseSystem system : systems) {
-            if (systemNotifiedEntities.get(system).contains(e) && !hasComponents(e, systemRequiredComponents.get(system))) {
-                system.notifyEntityRemoval(e);
-                systemNotifiedEntities.get(system).remove(e);
-            }
-        }
-    }
-
-    public void subscribeSystem(BaseSystem system, Class<? extends Component>... requiredComponents) {
-        systems.add(system);
-        systemNotifiedEntities.put(system, new HashSet<>());
-        systemRequiredComponents.put(system, requiredComponents);
-        systemPredecs.put(system, new ArrayList<>());
-        for (Entity e : entityToComponents.keySet()) {
-            if (e.hasComponents(systemRequiredComponents.get(system))) {
-                system.notifyEntityAddition(e);
-                systemNotifiedEntities.get(system).add(e);
-            }
-        }
-    }
-
-    public void unsubscribeSystem(BaseSystem system) {
-        systems.remove(system);
-        systemNotifiedEntities.remove(system);
-        systemRequiredComponents.remove(system);
-        systemPredecs.remove(system);
-        for (Entity e : entityToComponents.keySet()) {
-            system.notifyEntityRemoval(e);
-        }
-    }
-
-    public <T extends BaseSystem> void addSystemPredecessors(T system, BaseSystem... predecessors) {
-        for (BaseSystem pre : predecessors) {
-            systemPredecs.get(system).add(pre);
-        }
-    }
-
-    private void topSortAdditions(BaseSystem system, Set<BaseSystem> vis, Entity e) {
-        for (BaseSystem predec : systemPredecs.get(system)) {
-            if (!vis.contains(predec)) {
-                vis.add(predec);
-                topSortAdditions(predec, vis, e);
-            }
-        }
-        if (!systemNotifiedEntities.get(system).contains(e)) {
-            if (e.hasComponents(systemRequiredComponents.get(system))) {
-                system.notifyEntityAddition(e);
-                systemNotifiedEntities.get(system).add(e);
-            }
-        }
-    }
-
-    private void topSortSystems(BaseSystem system, Set<BaseSystem> vis, long deltaT) {
-        for (BaseSystem predec : systemPredecs.get(system)) {
-            if (!vis.contains(predec)) {
-                vis.add(predec);
-                topSortSystems(predec, vis, deltaT);
-            }
-        }
-        system.update(this, deltaT, lastTime);
-    }
-
-    public void updateSystems() {
-        long currentTime = java.lang.System.currentTimeMillis();
+    public void update() {
+        double currentTime = GLFW.glfwGetTime();
         if (lastTime == -1) {
             lastTime = currentTime;
         }
-        long deltaT = currentTime - lastTime;
-        lastTime = currentTime;
-        Set<BaseSystem> vis = new HashSet<>();
-        for (BaseSystem system : systems) {
-            if (!vis.contains(system)) {
-                topSortSystems(system, vis, deltaT);
-            }
+        double delta = currentTime - lastTime;
+
+        gameStateManager.update(delta, currentTime);
+    }
+
+    public void render() {
+        gameStateManager.render();
+    }
+
+    public void setStateManager(GameStateManager mgr) {
+        if (mgr == null) {
+            throw new NullStateManagerException();
         }
+        this.gameStateManager = mgr;
+    }
+
+    public GameStateManager getStateManager() {
+        return gameStateManager;
     }
 }

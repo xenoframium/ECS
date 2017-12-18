@@ -1,52 +1,43 @@
 package xenoframium.ecs;
 
 /**
- * Created by chrisjung on 28/09/17.
+ * Created by chrisjung on 18/12/17.
  */
 public final class Entity {
-    final int id;
-    final EntityManager mgr;
+    private static int numEntities = 0;
 
-    Entity(int id, EntityManager mgr) {
-        this.id = id;
-        this.mgr = mgr;
+    private final int id;
+    private final EntityManager manager;
+
+    boolean isDestroyed = false;
+
+    Entity(EntityManager manager) {
+        id = numEntities;
+        numEntities++;
+        this.manager = manager;
     }
 
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-
-        Entity entity = (Entity) o;
-
-        if (id != entity.id) return false;
-        return mgr.equals(entity.mgr);
-    }
-
-    @Override
-    public int hashCode() {
-        int result = id;
-        result = 31 * result + mgr.hashCode();
-        return result;
-    }
-
-    public void destroyEntity() {
-        mgr.destroyEntity(this);
-    }
-
-    public <T extends Component> void addComponents(T... components) {
-        mgr.addComponents(this, components);
-    }
-
-    public void removeComponents(Class<? extends Component>... components) {
-        mgr.removeComponents(this, components);
-    }
-
-    public boolean hasComponents(Class<? extends Component>... components) {
-        return mgr.hasComponents(this, components);
+    public boolean hasComponent(Class<? extends Component> componentClass) {
+        return manager.hasComponent(this, componentClass);
     }
 
     public <T extends Component> T getComponent(Class<T> componentClass) {
-        return mgr.getComponent(this, componentClass);
+        return manager.getComponent(this, componentClass);
+    }
+
+    public <T extends Component> void addComponent(T component) {
+        manager.addComponent(this, component);
+    }
+
+    public void removeComponent(Class<? extends Component> componentClass) {
+        manager.removeComponent(this, componentClass);
+    }
+
+    public void destroy() {
+        manager.destroyEntity(this);
+    }
+
+    public boolean isDestroyed() {
+        return isDestroyed;
     }
 }
